@@ -1,10 +1,11 @@
 package main
 
 import (
-    "fmt"
-    "sync"
-    "time"
-    "github.com/ekbostan/SCode/network"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/ekbostan/SCode/network"
 )
 
 func main() {
