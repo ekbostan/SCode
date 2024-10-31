@@ -1,92 +1,100 @@
 package network
 
 import (
-   "context"
    "sync"
 )
 
 type ServerOptions struct {
-    Transports []Transport
+   Transports []Transport
+   Workers    int
 }
 
 type Server struct {
-   Options   ServerOptions
-   rpcPool   *sync.Pool
-   rpcChan   chan *RPC
-   workers   int
-   cancel    context.CancelFunc
-   ctx       context.Context
+   Options  ServerOptions
+   rpcChan  chan *RPC
+   done     chan struct{}
+   wg       sync.WaitGroup
+   handler  Handler
 }
 
+type Handler func(rpc *RPC) error
+
 func NewServer(opts ServerOptions) *Server {
-   ctx, cancel := context.WithCancel(context.Background())
-   
-   s := &Server{
-       Options: opts,
-       rpcPool: &sync.Pool{
-           New: func() interface{} {
-               return &RPC{}
-           },
-       },
-       rpcChan: make(chan *RPC, 1024),
-       workers: 10,
-       ctx:     ctx,
-       cancel:  cancel,
+   if opts.Workers == 0 {
+       opts.Workers = 8
    }
-   return s
+   
+   return &Server{
+       Options: opts,
+       rpcChan: make(chan *RPC, 1024),
+       done:    make(chan struct{}),
+   }
+}
+
+func (s *Server) RegisterHandler(handler Handler) {
+   s.handler = handler
 }
 
 func (s *Server) initTransports() {
-   for i := 0; i < s.workers; i++ {
+   for i := 0; i < s.Options.Workers; i++ {
+       s.wg.Add(1)
        go s.processRPC()
    }
 
    for _, tr := range s.Options.Transports {
-       go func(tr Transport) {
-           for {
-               select {
-               case <-s.ctx.Done():
-                   return
-               default:
-                   rpc := s.rpcPool.Get().(*RPC)
-                   
-                   select {
-                   case msg := <-tr.Consume():
-                       rpc.sender = msg.sender
-                       rpc.Payload = msg.Payload
-                       
-                       select {
-                       case s.rpcChan <- rpc:
-                       case <-s.ctx.Done():
-                           s.rpcPool.Put(rpc)
-                           return
-                       }
-                   case <-s.ctx.Done():
-                       s.rpcPool.Put(rpc)
-                       return
-                   }
-               }
-           }
-       }(tr)
+       s.wg.Add(1)
+       go s.handleTransport(tr)
    }
 }
 
-func (s *Server) processRPC() {
+func (s *Server) handleTransport(tr Transport) {
+   defer s.wg.Done()
+   
    for {
        select {
-       case <-s.ctx.Done():
+       case <-s.done:
            return
-       case rpc := <-s.rpcChan:
-           s.rpcPool.Put(rpc)
+       case msg := <-tr.Consume():
+           rpc := &RPC{
+               sender:  msg.sender,
+               Payload: msg.Payload,
+           }
+           
+           select {
+           case s.rpcChan <- rpc:
+           case <-s.done:
+               return
+           }
        }
    }
 }
 
-func (s *Server) Start() {
-   s.initTransports()
+func (s *Server) processRPC() {
+   defer s.wg.Done()
+   
+   for {
+       select {
+       case <-s.done:
+           return
+       case rpc := <-s.rpcChan:
+           if s.handler != nil {
+               if err := s.handler(rpc); err != nil {
+                   // Handle error
+                   continue
+               }
+           }
+       }
+   }
 }
 
-func (s *Server) Shutdown() {
-   s.cancel()
+func (s *Server) Start() error {
+   s.initTransports()
+   return nil
+}
+
+func (s *Server) Shutdown() error {
+   close(s.done)
+   s.wg.Wait()
    close(s.rpcChan)
+   return nil
 }
