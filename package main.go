@@ -1,9 +1,19 @@
+// cmd/main.go
 package main
 
-import "fmt"
+import (
+   "github.com/ekbostan/SCode/network"
+)
 
+func main() {
+   trlocal := network.NewLocalTransport("LOCAL")
 
+   opts := network.ServerOptions{
+       Transports: []network.Transport{trlocal},
+   }
 
-func main(){
-	fmt.Println("Hello world")
+   server := network.NewServer(opts)
+   server.Start()
+   
+
 }
