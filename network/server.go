@@ -1,7 +1,8 @@
 package network
 
 import (
-   "sync"
+	"runtime"
+	"sync"
 )
 
 type ServerOptions struct {
@@ -21,7 +22,7 @@ type Handler func(rpc *RPC) error
 
 func NewServer(opts ServerOptions) *Server {
    if opts.Workers == 0 {
-       opts.Workers = 8
+       opts.Workers = runtime.NumCPU() * 2
    }
    
    return &Server{
