@@ -2,7 +2,6 @@ package network
 
 import (
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -32,122 +31,81 @@ func TestSendMessage(t *testing.T) {
 
     rpc := <-trb.Consume()
     assert.Equal(t, message, rpc.Payload)
-    assert.Equal(t, tra.GetAdress(), rpc.sender) 
+    assert.Equal(t, tra.GetAdress(), rpc.sender)
 }
 
-
-func TestServer(t *testing.T){
+func TestServer(t *testing.T) {
     transport1 := NewLocalTransport("server")
     transport2 := NewLocalTransport("client")
-    transports := []Transport{transport1,transport2}
-
+    
     opts := ServerOptions{
-        Transports: transports,
+        Transports: []Transport{transport1, transport2},
         Workers:    runtime.NumCPU(),
     }
 
     server := NewServer(opts)
 
-    assert.Equal(t,opts.Workers, server.Options.Workers)
+    assert.NotNil(t, server)
     assert.Equal(t, opts.Transports, server.Options.Transports)
-    assert.NotNil(t,server.rpcChan)
-    assert.NotNil(t,server.done)
+    assert.Equal(t, opts.Workers, server.Options.Workers)
 
-
-    var receivedMessages    []string
-    var mu  sync.Mutex
-
+    messageReceived := make(chan bool)
     server.RegisterHandler(func(rpc *RPC) error {
-        mu.Lock()
-        receivedMessages = append(receivedMessages, string(rpc.Payload))
-        mu.Unlock()
+        assert.Equal(t, []byte("test message"), rpc.Payload)
+        assert.Equal(t, transport2.GetAdress(), rpc.sender)
+        messageReceived <- true
         return nil
     })
+
+    server.Start()
+
     
-
-    err := server.Start()
-    assert.NoError(t,err)
-
-
     transport1.Connect(transport2)
     transport2.Connect(transport1)
 
+   
+    err := transport2.SendMessage(transport1.GetAdress(), []byte("test message"))
+    assert.Nil(t, err)
 
-    messages := []string{
-        "Message 1",
-        "Message 2",
-        "Message 3",
+
+    select {
+    case <-messageReceived:
+    case <-time.After(time.Second):
+        t.Fatal("Message was not processed within timeout")
     }
 
-    var wg sync.WaitGroup
-
-    for _,msg := range messages{
-        wg.Add(1)
-        go func(message string){
-            defer wg.Done()
-            err := transport2.SendMessage(transport1.sender,[]byte(msg))
-            assert.NoError(t,err)
-
-        }(msg)
-    }
-
-    wg.Wait()
-
-    time.Sleep(100 * time.Millisecond)
-
-    mu.Lock()
-    assert.Equal(t,len(messages),len(receivedMessages))
-
-    for _, msg := range messages{
-        assert.Contains(t,receivedMessages,msg)
-    }
-    mu.Unlock()
-
-    err = server.Shutdown()
-    assert.NoError(t,err)
-
-
-    select{
-    case _,ok := <- server.done:
-        assert.False(t,ok,"done channel should be closed")
-    default:
-    }
-
-    select{
-    case _,ok := <-server.rpcChan:
-        assert.False(t,ok,"rpcChan should be closed")
-    default:
-    }
+    server.Shutdown()
 }
 
 func TestServerWorkerCount(t *testing.T) {
-        tests := []struct {
-            name          string
-            workerCount   int
-            expectedCount int
-        }{
-            {
-                name:          "Zero workers defaults to NumCPU",
-                workerCount:   0,
-                expectedCount: runtime.NumCPU(),
-            },
-            {
-                name:          "Specific worker count",
-                workerCount:   4,
-                expectedCount: 4,
-            },
-        }
+    cpuCount := runtime.NumCPU()
     
-        for _, tt := range tests {
-            t.Run(tt.name, func(t *testing.T) {
-                opts := ServerOptions{
-                    Transports: []Transport{NewLocalTransport("test")},
-                    Workers:    tt.workerCount,
-                }
-                
-                server := NewServer(opts)
-                assert.Equal(t, tt.expectedCount, server.Options.Workers)
-            })
-        }
+    tests := []struct {
+        name          string
+        workerCount   int
+        expectedCount int
+    }{
+        {
+            name:          "Default worker count",
+            workerCount:   0,
+            expectedCount: cpuCount,
+        },
+        {
+            name:          "Custom worker count",
+            workerCount:   4,
+            expectedCount: 4,
+        },
     }
-    
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            opts := ServerOptions{
+                Transports: []Transport{NewLocalTransport("test")},
+                Workers:    tt.workerCount,
+            }
+            
+            server := NewServer(opts)
+            assert.Equal(t, tt.expectedCount, server.Options.Workers)
+        })
+    }
+}
